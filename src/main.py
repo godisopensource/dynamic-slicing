@@ -1,4 +1,4 @@
-from flask import Flask, render_template, redirect, url_for
+from flask import Flask, render_template, redirect, url_for, jsonify
 import os
 from kubernetes import client
 from kubernetes import config as k8s_config
@@ -30,6 +30,12 @@ def get_last_ue_index():
 @app.route('/')
 def hello():
     return render_template('index.html')
+
+@app.route('/api/ue-count')
+def ue_count():
+    """API pour récupérer le nombre de UE créés"""
+    count = get_last_ue_index()
+    return jsonify({'count': count})
 
 @app.route('/create_pods', methods=['POST'])
 def create_pods():
