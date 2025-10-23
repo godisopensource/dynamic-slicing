@@ -1,6 +1,6 @@
-flask
+Flask>=3.0,<4.0
+kubernetes>=29.0.0,<31.0.0
 k3sprovision
-kubernetes
 pytest
 requests
 kopf

@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dynamic Slicing</title>
+    <style>
+        :root {
+            --bg: #0a0b0d;
+            --fg: #e8eaf0;
+            --muted: #a7b0c0;
+            --accent: #6aa2ff;
+        }
+
+        * {
+            box-sizing: border-box
+        }
+
+        html,
+        body {
+            height: 100%
+        }
+
+        body {
+            margin: 0;
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+            background: linear-gradient(180deg, #0a0b0d, #101318);
+            color: var(--fg);
+            display: grid;
+            place-items: center;
+        }
+
+        .card {
+            width: min(720px, calc(100% - 32px));
+            background: #12151b;
+            border: 1px solid #1c2230;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, .35);
+            padding: 28px;
+        }
+
+        h1 {
+            margin: 0 0 .25rem;
+            font-size: 1.8rem
+        }
+
+        .muted {
+            color: var(--muted);
+            margin: 0 0 1.25rem
+        }
+
+        .grid {
+            display: grid;
+            gap: 12px;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .stat {
+            padding: 14px 16px;
+            border: 1px solid #1c2230;
+            border-radius: 10px;
+            background: #0f1218;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .stat .value {
+            font-size: 1.6rem;
+            font-weight: 700
+        }
+
+        .actions {
+            margin-top: 16px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap
+        }
+
+        button,
+        .btn {
+            cursor: pointer;
+            border: 1px solid #2a3446;
+            background: #162033;
+            color: #e6eeff;
+            padding: 10px 14px;
+            border-radius: 10px;
+            font-weight: 600;
+            letter-spacing: .2px;
+        }
+
+        button:hover,
+        .btn:hover {
+            border-color: #3a4a6b;
+            background: #1b2942
+        }
+
+        .btn-accent {
+            background: #1a3a72;
+            border-color: #2958ae
+        }
+
+        .btn-accent:hover {
+            background: #204788;
+            border-color: #3d73d7
+        }
+
+        .mono {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+        }
+
+        .sep {
+            height: 1px;
+            background: #1c2230;
+            margin: 18px 0
+        }
+
+        small {
+            color: #7d8799
+        }
+    </style>
+</head>
+
+<body>
+    <main class="card">
+        <h1>Dynamic Slicing</h1>
+        <p class="muted">Interface minimale pour piloter la génération des UE et visualiser leur nombre.</p>
+
+        <section class="grid">
+            <div class="stat">
+                <div>
+                    <div class="muted" style="margin:0">UE générés</div>
+                    <div id="ueCount" class="value">—</div>
+                </div>
+                <button id="refresh" title="Actualiser">Actualiser</button>
+            </div>
+            <div class="stat">
+                <div>
+                    <div class="muted" style="margin:0">État serveur</div>
+                    <div id="status" class="value" style="font-size:1rem">en attente…</div>
+                </div>
+                <span class="mono" id="ts">—</span>
+            </div>
+        </section>
+
+        <div class="actions">
+            <form method="post" action="/add_pod">
+                <button class="btn-accent" type="submit">+ Ajouter un UE</button>
+            </form>
+            <form method="post" action="/create_pods" onsubmit="return confirm('Générer 100 UE ?');">
+                <button type="submit">Générer 100 UE</button>
+            </form>
+            <button id="auto" type="button">Auto-refresh</button>
+        </div>
+
+        <div class="sep"></div>
+        <small>API: <span class="mono">GET /api/ue-count</span> · Actions: <span class="mono">POST /add_pod</span>,
+            <span class="mono">POST /create_pods</span></small>
+    </main>
+
+    <script>
+        const ueCountEl = document.getElementById('ueCount');
+        const statusEl = document.getElementById('status');
+        const tsEl = document.getElementById('ts');
+        const refreshBtn = document.getElementById('refresh');
+        const autoBtn = document.getElementById('auto');
+
+        let timer = null;
+
+        function stamp() { tsEl.textContent = new Date().toLocaleTimeString(); }
+
+        async function load() {
+            try {
+                statusEl.textContent = 'chargement…';
+                const r = await fetch('/api/ue-count');
+                const j = await r.json();
+                ueCountEl.textContent = j.count;
+                statusEl.textContent = 'en ligne';
+            } catch (e) {
+                statusEl.textContent = 'hors ligne';
+            } finally { stamp(); }
+        }
+
+        refreshBtn.addEventListener('click', load);
+
+        autoBtn.addEventListener('click', () => {
+            if (timer) {
+                clearInterval(timer); timer = null; autoBtn.textContent = 'Auto-refresh';
+            } else {
+                load(); timer = setInterval(load, 2000); autoBtn.textContent = 'Stop auto-refresh';
+            }
+        });
+
+        load();
+    </script>
+</body>
+
+</html>
