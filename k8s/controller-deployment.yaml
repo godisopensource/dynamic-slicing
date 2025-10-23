@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nexslice-controller
+  namespace: nexslice
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nexslice-controller
+  template:
+    metadata:
+      labels:
+        app: nexslice-controller
+    spec:
+      serviceAccountName: nexslice-controller
+      containers:
+      - name: controller
+        image: python:3.11-slim
+        command: ["python", "-m", "src.main"]
+        env:
+        - name: UPF_IMAGE
+          value: "free5gc/upf:latest"
+        - name: UPF_REPLICAS
+          value: "1"
+        volumeMounts: []

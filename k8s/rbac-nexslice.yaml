@@ -1,0 +1,38 @@
+# RBAC for the nexslice controller/service to manage UE and UPF resources
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nexslice
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nexslice-controller
+  namespace: nexslice
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nexslice-controller-role
+  namespace: nexslice
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nexslice-controller-binding
+  namespace: nexslice
+subjects:
+- kind: ServiceAccount
+  name: nexslice-controller
+  namespace: nexslice
+roleRef:
+  kind: Role
+  name: nexslice-controller-role
+  apiGroup: rbac.authorization.k8s.io

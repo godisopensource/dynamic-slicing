@@ -1,0 +1,6 @@
+flask
+k3sprovision
+kubernetes
+pytest
+requests
+kopf

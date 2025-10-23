@@ -6,6 +6,13 @@ import re
 
 app = Flask(__name__)
 
+# Configuration simple via variables d'environnement
+UPF_IMAGE = os.environ.get("UPF_IMAGE", "free5gc/upf:latest")
+try:
+    UPF_REPLICAS = int(os.environ.get("UPF_REPLICAS", "1"))
+except Exception:
+    UPF_REPLICAS = 1
+
 def get_last_ue_index():
     """Récupère l'index du dernier fichier de configuration UE"""
     ue_conf_dir = "./tmp/ue-confs/"
@@ -44,6 +51,11 @@ def create_pods():
         generate_ue_config(i)
         create_ue_configmap(i)
         create_ue_pod(i)
+        # Créer un UPF dédié pour cet UE
+        try:
+            create_upf_for_ue(i, image=UPF_IMAGE, replicas=UPF_REPLICAS)
+        except Exception as e:
+            print(f"Erreur lors de la création de l'UPF pour UE {i}: {e}")
     
     return redirect(url_for('hello'))
 
@@ -55,6 +67,11 @@ def add_pods():
     create_ue_configmap(i)
     create_ue_pod(i)
     print(f"UE {i} généré (fichiers de config créés)")
+    # Créer un UPF dédié pour ce nouvel UE
+    try:
+        create_upf_for_ue(i, image=UPF_IMAGE, replicas=UPF_REPLICAS)
+    except Exception as e:
+        print(f"Erreur lors de la création de l'UPF pour UE {i}: {e}")
     
     return redirect(url_for('hello'))
 
@@ -216,3 +233,137 @@ def create_ue_pod(ue_id, image="gradiant/ueransim:3.2.6"):
         # En mode dev sans Kubernetes, on continue sans créer le Pod
         return False
     return True
+
+
+def make_upf_deployment_and_service(name, labels, image, replicas):
+    """Return a (deployment, service) tuple for an UPF named `name`.
+
+    Includes minimal resource requests/limits to avoid noisy-neighbor issues in cluster.
+    """
+    deployment = {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {"name": name, "namespace": "nexslice"},
+        "spec": {
+            "replicas": replicas,
+            "selector": {"matchLabels": labels},
+            "template": {
+                "metadata": {"labels": labels},
+                "spec": {
+                    "containers": [{
+                        "name": "upf",
+                        "image": image,
+                        "imagePullPolicy": "IfNotPresent",
+                        "ports": [{"containerPort": 2152, "name": "gtpu"}, {"containerPort": 8805, "name": "pfcp"}],
+                        "resources": {
+                            "requests": {"cpu": "100m", "memory": "128Mi"},
+                            "limits": {"cpu": "500m", "memory": "512Mi"}
+                        }
+                    }]
+                }
+            }
+        }
+    }
+
+    service = {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": name, "namespace": "nexslice"},
+        "spec": {
+            "selector": labels,
+            "ports": [
+                {"protocol": "UDP", "port": 2152, "targetPort": "gtpu"},
+                {"protocol": "UDP", "port": 8805, "targetPort": "pfcp"}
+            ]
+        }
+    }
+
+    return deployment, service
+
+
+def create_upf_for_ue(ue_id, image="free5gc/upf:latest", replicas=1):
+    """Crée une Deployment + Service UPF dédiée pour un UE.
+
+    Note: l'image par défaut est un placeholder — changez-la pour une image UPF réelle
+    adaptée à votre environnement (ex: free5gc/upf, upf-bess, etc.).
+    """
+    try:
+        k8s_config.load_kube_config()
+        apps_v1 = client.AppsV1Api()
+        v1 = client.CoreV1Api()
+
+        name = f"upf-ue{ue_id}"
+        labels = {"app": "upf", "ue-id": str(ue_id)}
+
+        deployment, service = make_upf_deployment_and_service(name, labels, image, replicas)
+
+        apps_v1.create_namespaced_deployment(namespace="nexslice", body=deployment)
+        v1.create_namespaced_service(namespace="nexslice", body=service)
+        print(f"UPF {name} (Deployment+Service) créé pour UE {ue_id}.")
+    except Exception as e:
+        print(f"Erreur lors de la création de l'UPF pour UE {ue_id}: {e}")
+        return False
+    return True
+
+
+def delete_upf_for_ue(ue_id):
+    """Supprime la Deployment et le Service UPF pour un UE si ils existent."""
+    try:
+        k8s_config.load_kube_config()
+        apps_v1 = client.AppsV1Api()
+        v1 = client.CoreV1Api()
+
+        name = f"upf-ue{ue_id}"
+
+        # Delete deployment (ignore if not found)
+        try:
+            apps_v1.delete_namespaced_deployment(name=name, namespace="nexslice")
+            print(f"Deployment {name} supprimé.")
+        except Exception:
+            pass
+
+        # Delete service
+        try:
+            v1.delete_namespaced_service(name=name, namespace="nexslice")
+            print(f"Service {name} supprimé.")
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"Erreur lors de la suppression de l'UPF pour UE {ue_id}: {e}")
+        return False
+    return True
+
+
+@app.route('/remove_pod/<int:ue_id>', methods=['POST'])
+def remove_pod(ue_id):
+    """Supprime le Pod UE, le ConfigMap associé et l'UPF dédié.
+
+    Cette route permet de simuler la déconnexion d'un UE et libérer les
+    ressources UPF associées.
+    """
+    # Supprimer le Pod
+    try:
+        k8s_config.load_kube_config()
+        v1 = client.CoreV1Api()
+        pod_name = f"ueransim-ue{ue_id}"
+        configmap_name = f"ueransim-ue{ue_id}-config"
+
+        try:
+            v1.delete_namespaced_pod(name=pod_name, namespace="nexslice")
+            print(f"Pod {pod_name} supprimé.")
+        except Exception:
+            print(f"Pod {pod_name} non trouvé ou erreur lors de la suppression.")
+
+        # Supprimer ConfigMap
+        try:
+            v1.delete_namespaced_config_map(name=configmap_name, namespace="nexslice")
+            print(f"ConfigMap {configmap_name} supprimé.")
+        except Exception:
+            print(f"ConfigMap {configmap_name} non trouvé ou erreur lors de la suppression.")
+
+        # Supprimer l'UPF
+        delete_upf_for_ue(ue_id)
+    except Exception as e:
+        print(f"Erreur lors de la suppression des ressources pour UE {ue_id}: {e}")
+
+    return redirect(url_for('hello'))
