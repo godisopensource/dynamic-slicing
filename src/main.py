@@ -44,6 +44,25 @@ def ue_count():
     count = get_last_ue_index()
     return jsonify({'count': count})
 
+@app.route('/api/ue-list')
+def ue_list():
+    """API pour récupérer la liste des UE actifs"""
+    ue_conf_dir = "./tmp/ue-confs/"
+    
+    if not os.path.exists(ue_conf_dir):
+        return jsonify({'ues': []})
+    
+    files = os.listdir(ue_conf_dir)
+    ue_ids = []
+    
+    for file in files:
+        match = re.match(r'ue(\d+)\.yaml', file)
+        if match:
+            ue_ids.append(int(match.group(1)))
+    
+    ue_ids.sort()
+    return jsonify({'ues': ue_ids})
+
 @app.route('/create_pods', methods=['POST'])
 def create_pods():
     # Générer 100 UE UERANSIM
@@ -341,6 +360,12 @@ def remove_pod(ue_id):
     Cette route permet de simuler la déconnexion d'un UE et libérer les
     ressources UPF associées.
     """
+    # Supprimer le fichier de configuration local
+    config_file = f"./tmp/ue-confs/ue{ue_id}.yaml"
+    if os.path.exists(config_file):
+        os.remove(config_file)
+        print(f"Fichier {config_file} supprimé.")
+    
     # Supprimer le Pod
     try:
         k8s_config.load_kube_config()

@@ -119,6 +119,49 @@
         small {
             color: #7d8799
         }
+
+        .ue-list {
+            margin-top: 20px;
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #1c2230;
+            border-radius: 10px;
+            background: #0f1218;
+        }
+
+        .ue-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 16px;
+            border-bottom: 1px solid #1c2230;
+        }
+
+        .ue-item:last-child {
+            border-bottom: none;
+        }
+
+        .ue-item:hover {
+            background: #12151b;
+        }
+
+        .btn-danger {
+            background: #6b1a1a;
+            border-color: #8a2a2a;
+            padding: 6px 12px;
+            font-size: 0.9rem;
+        }
+
+        .btn-danger:hover {
+            background: #8a2a2a;
+            border-color: #aa3a3a;
+        }
+
+        .empty-state {
+            padding: 20px;
+            text-align: center;
+            color: var(--muted);
+        }
     </style>
 </head>
 
@@ -155,8 +198,16 @@
         </div>
 
         <div class="sep"></div>
-        <small>API: <span class="mono">GET /api/ue-count</span> · Actions: <span class="mono">POST /add_pod</span>,
-            <span class="mono">POST /create_pods</span></small>
+
+        <h2 style="font-size: 1.3rem; margin: 0 0 12px;">UE actifs</h2>
+        <div class="ue-list" id="ueList">
+            <div class="empty-state">Chargement...</div>
+        </div>
+
+        <div class="sep"></div>
+        <small>API: <span class="mono">GET /api/ue-count</span>, <span class="mono">GET /api/ue-list</span> · Actions:
+            <span class="mono">POST /add_pod</span>,
+            <span class="mono">POST /create_pods</span>, <span class="mono">POST /remove_pod/:id</span></small>
     </main>
 
     <script>
@@ -165,10 +216,36 @@
         const tsEl = document.getElementById('ts');
         const refreshBtn = document.getElementById('refresh');
         const autoBtn = document.getElementById('auto');
+        const ueListEl = document.getElementById('ueList');
 
         let timer = null;
 
         function stamp() { tsEl.textContent = new Date().toLocaleTimeString(); }
+
+        async function loadUEList() {
+            try {
+                const r = await fetch('/api/ue-list');
+                const j = await r.json();
+
+                if (j.ues.length === 0) {
+                    ueListEl.innerHTML = '<div class="empty-state">Aucun UE actif</div>';
+                } else {
+                    ueListEl.innerHTML = j.ues.map(id => `
+                        <div class="ue-item">
+                            <div>
+                                <strong>UE ${id}</strong>
+                                <span class="muted" style="margin-left: 8px; font-size: 0.9rem;">IMSI: 999700${String(id).padStart(9, '0')}</span>
+                            </div>
+                            <form method="post" action="/remove_pod/${id}" style="margin: 0;" onsubmit="return confirm('Supprimer UE ${id} ?');">
+                                <button type="submit" class="btn-danger">Supprimer</button>
+                            </form>
+                        </div>
+                    `).join('');
+                }
+            } catch (e) {
+                ueListEl.innerHTML = '<div class="empty-state">Erreur de chargement</div>';
+            }
+        }
 
         async function load() {
             try {
@@ -177,6 +254,7 @@
                 const j = await r.json();
                 ueCountEl.textContent = j.count;
                 statusEl.textContent = 'en ligne';
+                await loadUEList();
             } catch (e) {
                 statusEl.textContent = 'hors ligne';
             } finally { stamp(); }
