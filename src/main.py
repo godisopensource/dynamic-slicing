@@ -1,4 +1,4 @@
-from flask import Flask, render_template, redirect, url_for, jsonify
+from flask import Flask, render_template, redirect, url_for, jsonify, request
 import os
 from kubernetes import client
 from kubernetes import config as k8s_config
@@ -392,3 +392,85 @@ def remove_pod(ue_id):
         print(f"Erreur lors de la suppression des ressources pour UE {ue_id}: {e}")
 
     return redirect(url_for('hello'))
+
+
+@app.route('/api/ue-disconnect', methods=['POST'])
+def ue_disconnect():
+    """Webhook simplifié pour signaler la déconnexion d'un UE.
+
+    Corps JSON attendu:
+    {"ue_id": 1}
+
+    Supprime les ressources UE locales (fichier de config, Pod, ConfigMap)
+    ainsi que l'UPF dédié.
+    """
+    data = request.get_json(silent=True) or {}
+    ue_id = data.get("ue_id")
+    if not isinstance(ue_id, int) or ue_id <= 0:
+        return jsonify({"error": "ue_id entier positif requis"}), 400
+
+    # Réutiliser la logique existante de remove_pod
+    config_file = f"./tmp/ue-confs/ue{ue_id}.yaml"
+    if os.path.exists(config_file):
+        os.remove(config_file)
+
+    try:
+        k8s_config.load_kube_config()
+        v1 = client.CoreV1Api()
+        pod_name = f"ueransim-ue{ue_id}"
+        configmap_name = f"ueransim-ue{ue_id}-config"
+
+        try:
+            v1.delete_namespaced_pod(name=pod_name, namespace="nexslice")
+        except Exception:
+            pass
+
+        try:
+            v1.delete_namespaced_config_map(name=configmap_name, namespace="nexslice")
+        except Exception:
+            pass
+
+        delete_upf_for_ue(ue_id)
+    except Exception as e:
+        print(f"Erreur lors de la suppression des ressources pour UE {ue_id}: {e}")
+        return jsonify({"error": "erreur de suppression des ressources"}), 500
+
+    return jsonify({"status": "ok", "ue_id": ue_id}), 200
+
+
+if __name__ == "__main__":
+    # Permet de configurer l'hôte et le port via les variables d'environnement
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "5000"))
+    debug = os.environ.get("FLASK_DEBUG", "0") in ("1", "true", "True")
+    print(f"Starting Flask on {host}:{port} (debug={debug})")
+    app.run(host=host, port=port, debug=debug)
+
+
+@app.route('/api/ue-connect', methods=['POST'])
+def ue_connect():
+    """Webhook simplifié pour signaler la connexion d'un UE.
+
+    Corps JSON attendu (exemple minimal):
+    {"ue_id": 1}
+
+    Dans un système complet, cet endpoint pourrait être appelé par
+    Alertmanager, un opérateur 5G ou un autre composant lorsqu'un
+    événement de connexion UE est détecté.
+    """
+    data = request.get_json(silent=True) or {}
+    ue_id = data.get("ue_id")
+    if not isinstance(ue_id, int) or ue_id <= 0:
+        return jsonify({"error": "ue_id entier positif requis"}), 400
+
+    # Générer configuration et ressources UE si nécessaire
+    generate_ue_config(ue_id)
+    create_ue_configmap(ue_id)
+    create_ue_pod(ue_id)
+
+    # Créer UPF dédié
+    ok = create_upf_for_ue(ue_id, image=UPF_IMAGE, replicas=UPF_REPLICAS)
+    if not ok:
+        return jsonify({"error": f"échec création UPF pour UE {ue_id}"}), 500
+
+    return jsonify({"status": "ok", "ue_id": ue_id}), 200
