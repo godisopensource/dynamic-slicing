@@ -4,6 +4,9 @@ import requests
 import pytest
 from kubernetes import client, config
 
+# Activate demo mode by default for tests so we don't depend on a live cluster unless specified.
+os.environ.setdefault("DEMO_MODE", "1")
+
 API_BASE = os.environ.get('API_BASE', 'http://localhost:5000')
 NAMESPACE = 'nexslice'
 

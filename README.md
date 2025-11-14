@@ -67,6 +67,37 @@ Prérequis :
 
 	./scripts/demo.sh 1
 
+## Déploiement en-cluster (optionnel)
+
+Si vous souhaitez exécuter le contrôleur dans le cluster (mode production / test plus réaliste), des manifests Kubernetes sont fournis sous le dossier `k8s/` :
+
+
+Pour déployer dans le cluster :
+
+```fish
+# s'assurer que kubectl pointe vers le cluster souhaité
+kubectl create ns nexslice --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f k8s/rbac-nexslice.yaml
+kubectl apply -f k8s/controller-deployment.yaml
+kubectl -n nexslice get deploy nexslice-controller
+```
+
+### Mode démo sans cluster Kubernetes
+
+Si tu veux uniquement démontrer le contrôleur (UI + Prometheus/Grafana) sans avoir accès à un cluster, active le mode démo :
+
+```fish
+export DEMO_MODE=1
+python -m src.main
+```
+
+Dans ce mode, les appels au client Kubernetes sont ignorés mais les métriques (`nexslice_active_ues`, `nexslice_upf_creations_total`, `nexslice_upf_deletions_total`) sont incrémentées, ce qui permet de visualiser un flux complet dans Grafana sans cluster. Pour retrouver le comportement réel, laisse `DEMO_MODE` désactivé.
+
+Notes :
+- Ajustez les variables d'environnement `UPF_IMAGE` et `UPF_REPLICAS` dans `k8s/controller-deployment.yaml` ou via `kubectl set env` si vous voulez utiliser une image UPF différente.
+- En-cluster, veillez à ce que le `ServiceAccount` ait les permissions nécessaires (le fichier `rbac-nexslice.yaml` contient un jeu minimal de permissions pour le POC).
+- Si vous exécutez l'app hors cluster (mode courant), les manifests sont facultatifs.
+
 ## Endpoints principaux
 
 - `POST /add_pod` :
@@ -107,4 +138,5 @@ Ce POC implémente la logique minimale de slicing dynamique recommandée :
 
 - **Intégration open5gs-operator / HEXAeBPF** : utiliser leurs CRDs pour déclarer les slices et brancher ce contrôleur sur les événements UE réels.
 - **Prometheus / Alertmanager / KEDA** : exposer des métriques (UEs par slice, charge UPF) et déclencher la création/suppression ou le scaling des UPF via des webhooks et/ou des objets `ScaledObject` KEDA.
+- **Monitoring Prometheus + Grafana** : utilise l'endpoint `/metrics` exposé par l'app et suis les indications de `docs/monitoring.md` pour configurer Prometheus + Grafana.
 - **Opérateur Kubernetes dédié** : transformer cette app Flask en opérateur Kubernetes (par exemple avec `kopf`) pour suivre le pattern « Operator » complet.

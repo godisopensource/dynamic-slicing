@@ -4,3 +4,4 @@ k3sprovision
 pytest
 requests
 kopf
+prometheus_client

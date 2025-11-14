@@ -1,8 +1,9 @@
-from flask import Flask, render_template, redirect, url_for, jsonify, request
+from flask import Flask, render_template, redirect, url_for, jsonify, request, Response
 import os
 from kubernetes import client
 from kubernetes import config as k8s_config
 import re
+from prometheus_client import Gauge, Counter, generate_latest, CONTENT_TYPE_LATEST
 
 app = Flask(__name__)
 
@@ -12,6 +13,11 @@ try:
     UPF_REPLICAS = int(os.environ.get("UPF_REPLICAS", "1"))
 except Exception:
     UPF_REPLICAS = 1
+DEMO_MODE = os.environ.get("DEMO_MODE", "0").lower() in ("1", "true", "yes")
+
+UE_GAUGE = Gauge('nexslice_active_ues', 'Nombre d\'UE configurés (fichiers locaux)')
+UPF_CREATE_COUNTER = Counter('nexslice_upf_creations_total', 'Nombre total d\'UPF créés dynamiquement')
+UPF_DELETE_COUNTER = Counter('nexslice_upf_deletions_total', 'Nombre total d\'UPF supprimés dynamiquement')
 
 def get_last_ue_index():
     """Récupère l'index du dernier fichier de configuration UE"""
@@ -33,6 +39,13 @@ def get_last_ue_index():
     
     # Retourner le plus grand numéro ou 0 si aucun fichier
     return max(ue_numbers) if ue_numbers else 0
+
+
+def refresh_ue_metrics():
+    try:
+        UE_GAUGE.set(get_last_ue_index())
+    except Exception:
+        pass
 
 @app.route('/')
 def hello():
@@ -164,9 +177,13 @@ ciphering:
     
     with open(f"./tmp/ue-confs/ue{ue_id}.yaml", "w") as f:
         f.write(config_content)
+    refresh_ue_metrics()
 
 def create_ue_configmap(ue_id):
     """Crée un ConfigMap Kubernetes pour la configuration du UE"""
+    if DEMO_MODE:
+        print(f"[DEMO_MODE] Skip ConfigMap creation for UE {ue_id}.")
+        return True
     try:
         k8s_config.load_kube_config()
         v1 = client.CoreV1Api()
@@ -198,6 +215,9 @@ def create_ue_configmap(ue_id):
 
 def create_ue_pod(ue_id, image="gradiant/ueransim:3.2.6"):
     """Crée un Pod UERANSIM pour simuler un UE"""
+    if DEMO_MODE:
+        print(f"[DEMO_MODE] Skip Pod creation for UE {ue_id}.")
+        return True
     try:
         # Charger la config Kubernetes uniquement quand nécessaire
         k8s_config.load_kube_config()
@@ -291,8 +311,8 @@ def make_upf_deployment_and_service(name, labels, image, replicas):
         "spec": {
             "selector": labels,
             "ports": [
-                {"protocol": "UDP", "port": 2152, "targetPort": "gtpu"},
-                {"protocol": "UDP", "port": 8805, "targetPort": "pfcp"}
+                {"protocol": "UDP", "port": 2152, "targetPort": "gtpu", "name": "gtpu"},
+                {"protocol": "UDP", "port": 8805, "targetPort": "pfcp", "name": "pfcp"}
             ]
         }
     }
@@ -306,6 +326,10 @@ def create_upf_for_ue(ue_id, image="free5gc/upf:latest", replicas=1):
     Note: l'image par défaut est un placeholder — changez-la pour une image UPF réelle
     adaptée à votre environnement (ex: free5gc/upf, upf-bess, etc.).
     """
+    if DEMO_MODE:
+        print(f"[DEMO_MODE] Pretend creating UPF upf-ue{ue_id} (no Kubernetes API call).")
+        UPF_CREATE_COUNTER.inc()
+        return True
     try:
         k8s_config.load_kube_config()
         apps_v1 = client.AppsV1Api()
@@ -319,6 +343,7 @@ def create_upf_for_ue(ue_id, image="free5gc/upf:latest", replicas=1):
         apps_v1.create_namespaced_deployment(namespace="nexslice", body=deployment)
         v1.create_namespaced_service(namespace="nexslice", body=service)
         print(f"UPF {name} (Deployment+Service) créé pour UE {ue_id}.")
+        UPF_CREATE_COUNTER.inc()
     except Exception as e:
         print(f"Erreur lors de la création de l'UPF pour UE {ue_id}: {e}")
         return False
@@ -327,6 +352,10 @@ def create_upf_for_ue(ue_id, image="free5gc/upf:latest", replicas=1):
 
 def delete_upf_for_ue(ue_id):
     """Supprime la Deployment et le Service UPF pour un UE si ils existent."""
+    if DEMO_MODE:
+        print(f"[DEMO_MODE] Pretend deleting UPF upf-ue{ue_id} (no Kubernetes API call).")
+        UPF_DELETE_COUNTER.inc()
+        return True
     try:
         k8s_config.load_kube_config()
         apps_v1 = client.AppsV1Api()
@@ -347,6 +376,7 @@ def delete_upf_for_ue(ue_id):
             print(f"Service {name} supprimé.")
         except Exception:
             pass
+        UPF_DELETE_COUNTER.inc()
     except Exception as e:
         print(f"Erreur lors de la suppression de l'UPF pour UE {ue_id}: {e}")
         return False
@@ -364,7 +394,9 @@ def remove_pod(ue_id):
     config_file = f"./tmp/ue-confs/ue{ue_id}.yaml"
     if os.path.exists(config_file):
         os.remove(config_file)
+        refresh_ue_metrics()
         print(f"Fichier {config_file} supprimé.")
+        refresh_ue_metrics()
     
     # Supprimer le Pod
     try:
@@ -413,6 +445,7 @@ def ue_disconnect():
     config_file = f"./tmp/ue-confs/ue{ue_id}.yaml"
     if os.path.exists(config_file):
         os.remove(config_file)
+        refresh_ue_metrics()
 
     try:
         k8s_config.load_kube_config()
@@ -436,15 +469,6 @@ def ue_disconnect():
         return jsonify({"error": "erreur de suppression des ressources"}), 500
 
     return jsonify({"status": "ok", "ue_id": ue_id}), 200
-
-
-if __name__ == "__main__":
-    # Permet de configurer l'hôte et le port via les variables d'environnement
-    host = os.environ.get("HOST", "0.0.0.0")
-    port = int(os.environ.get("PORT", "5000"))
-    debug = os.environ.get("FLASK_DEBUG", "0") in ("1", "true", "True")
-    print(f"Starting Flask on {host}:{port} (debug={debug})")
-    app.run(host=host, port=port, debug=debug)
 
 
 @app.route('/api/ue-connect', methods=['POST'])
@@ -474,3 +498,19 @@ def ue_connect():
         return jsonify({"error": f"échec création UPF pour UE {ue_id}"}), 500
 
     return jsonify({"status": "ok", "ue_id": ue_id}), 200
+
+
+@app.route('/metrics')
+def metrics():
+    """Expose les métriques Prometheus."""
+    refresh_ue_metrics()
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
+
+
+if __name__ == "__main__":
+    # Permet de configurer l'hôte et le port via les variables d'environnement
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "5000"))
+    debug = os.environ.get("FLASK_DEBUG", "0") in ("1", "true", "True")
+    print(f"Starting Flask on {host}:{port} (debug={debug})")
+    app.run(host=host, port=port, debug=debug)
