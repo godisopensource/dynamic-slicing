@@ -8,16 +8,16 @@ from prometheus_client import Gauge, Counter, generate_latest, CONTENT_TYPE_LATE
 app = Flask(__name__)
 
 # Configuration simple via variables d'environnement
-UPF_IMAGE = os.environ.get("UPF_IMAGE", "free5gc/upf:latest")
+UPF_IMAGE = os.environ.get("UPF_IMAGE", "oaisoftwarealliance/oai-upf:latest")
 try:
     UPF_REPLICAS = int(os.environ.get("UPF_REPLICAS", "1"))
 except Exception:
     UPF_REPLICAS = 1
 DEMO_MODE = os.environ.get("DEMO_MODE", "0").lower() in ("1", "true", "yes")
 
-UE_GAUGE = Gauge('nexslice_active_ues', 'Nombre d\'UE configurés (fichiers locaux)')
-UPF_CREATE_COUNTER = Counter('nexslice_upf_creations_total', 'Nombre total d\'UPF créés dynamiquement')
-UPF_DELETE_COUNTER = Counter('nexslice_upf_deletions_total', 'Nombre total d\'UPF supprimés dynamiquement')
+UE_GAUGE = Gauge('nexslice_active_ues', 'Nombre d\'UE configur\u00e9s (fichiers locaux)')
+# Gauge for total UPFs present in the cluster (or approximated in DEMO_MODE)
+UPF_GAUGE = Gauge('nexslice_upfs_total', 'Nombre total d\'UPF d\u00e9ploy\u00e9s')
 
 def get_last_ue_index():
     """Récupère l'index du dernier fichier de configuration UE"""
@@ -44,6 +44,40 @@ def get_last_ue_index():
 def refresh_ue_metrics():
     try:
         UE_GAUGE.set(get_last_ue_index())
+    except Exception:
+        pass
+
+
+def get_upf_count():
+    """Count UPF deployments in the cluster or approximate via local files in DEMO_MODE.
+
+    Returns an integer count.
+    """
+    # In demo mode we approximate by counting local UE config files (one UPF per UE)
+    if DEMO_MODE:
+        ue_conf_dir = "./tmp/ue-confs/"
+        if not os.path.exists(ue_conf_dir):
+            return 0
+        files = os.listdir(ue_conf_dir)
+        cnt = 0
+        for file in files:
+            if re.match(r'ue(\d+)\.yaml', file):
+                cnt += 1
+        return cnt
+
+    # In real mode, query Kubernetes for deployments labeled app=upf in namespace nexslice
+    try:
+        k8s_config.load_kube_config()
+        apps_v1 = client.AppsV1Api()
+        deps = apps_v1.list_namespaced_deployment(namespace="nexslice", label_selector="app=upf")
+        return len(deps.items)
+    except Exception:
+        return 0
+
+
+def refresh_upf_metrics():
+    try:
+        UPF_GAUGE.set(get_upf_count())
     except Exception:
         pass
 
@@ -89,6 +123,74 @@ def create_pods():
         except Exception as e:
             print(f"Erreur lors de la création de l'UPF pour UE {i}: {e}")
     
+    return redirect(url_for('hello'))
+
+
+@app.route('/delete_pods', methods=['POST'])
+def delete_pods():
+    """Supprime les 100 UEs/UPFs créés par le bouton de génération.
+
+    Itère sur les IDs 1..100 et supprime le fichier de config local, le Pod
+    UERANSIM, le ConfigMap et l'UPF (Deployment + Service). Ignore les erreurs
+    individuelles afin que l'opération soit idempotente.
+    """
+    start = 1
+    end = 100
+    for i in range(start, end + 1):
+        # supprimer fichier local
+        config_file = f"./tmp/ue-confs/ue{i}.yaml"
+        if os.path.exists(config_file):
+            try:
+                os.remove(config_file)
+                print(f"Fichier {config_file} supprimé.")
+            except Exception as e:
+                print(f"Erreur suppression fichier {config_file}: {e}")
+
+        # supprimer ressources Kubernetes (pod, configmap, deployment, service)
+        if DEMO_MODE:
+            # In demo mode, just increment deletion counter and continue
+            UPF_DELETE_COUNTER.inc()
+            refresh_ue_metrics()
+            continue
+
+        try:
+            k8s_config.load_kube_config()
+            v1 = client.CoreV1Api()
+            apps_v1 = client.AppsV1Api()
+
+            pod_name = f"ueransim-ue{i}"
+            configmap_name = f"ueransim-ue{i}-config"
+            upf_name = f"upf-ue{i}"
+
+            try:
+                v1.delete_namespaced_pod(name=pod_name, namespace="nexslice")
+                print(f"Pod {pod_name} supprimé.")
+            except Exception:
+                pass
+
+            try:
+                v1.delete_namespaced_config_map(name=configmap_name, namespace="nexslice")
+                print(f"ConfigMap {configmap_name} supprimé.")
+            except Exception:
+                pass
+
+            try:
+                apps_v1.delete_namespaced_deployment(name=upf_name, namespace="nexslice")
+                print(f"Deployment {upf_name} supprimé.")
+            except Exception:
+                pass
+
+            try:
+                v1.delete_namespaced_service(name=upf_name, namespace="nexslice")
+                print(f"Service {upf_name} supprimé.")
+            except Exception:
+                pass
+
+            UPF_DELETE_COUNTER.inc()
+            refresh_ue_metrics()
+        except Exception as e:
+            print(f"Erreur lors de la suppression des ressources pour UE {i}: {e}")
+
     return redirect(url_for('hello'))
 
 @app.route('/add_pod', methods=['POST'])
@@ -237,16 +339,16 @@ def create_ue_pod(ue_id, image="gradiant/ueransim:3.2.6"):
                     "ue-id": str(ue_id)
                 }
             },
-            "spec": {
+                "spec": {
                 "containers": [{
                     "name": "ueransim-ue",
                     "image": image,
                     "imagePullPolicy": "Always",
-                    "command": ["/ueransim/build/nr-ue"],
-                    "args": ["-c", f"/config/ue{ue_id}.yaml"],
+                    # Let the image use its own ENTRYPOINT/CMD (UERANSIM image has a startup script)
+                    "args": ["nr-ue", "-c", f"/etc/ueransim/ue{ue_id}.yaml"],
                     "volumeMounts": [{
                         "name": "config-volume",
-                        "mountPath": "/config"
+                        "mountPath": "/etc/ueransim"
                     }],
                     "securityContext": {
                         "capabilities": {
@@ -294,6 +396,15 @@ def make_upf_deployment_and_service(name, labels, image, replicas):
                         "image": image,
                         "imagePullPolicy": "IfNotPresent",
                         "ports": [{"containerPort": 2152, "name": "gtpu"}, {"containerPort": 8805, "name": "pfcp"}],
+                        "env": [
+                            {"name": "TZ", "value": "Europe/Paris"},
+                            {"name": "ENABLE_5G_FEATURES", "value": "yes"},
+                            {"name": "REGISTER_NRF", "value": "no"}
+                        ],
+                        "securityContext": {
+                            "capabilities": {"add": ["NET_ADMIN", "SYS_ADMIN"]},
+                            "privileged": True
+                        },
                         "resources": {
                             "requests": {"cpu": "100m", "memory": "128Mi"},
                             "limits": {"cpu": "500m", "memory": "512Mi"}
@@ -328,7 +439,8 @@ def create_upf_for_ue(ue_id, image="free5gc/upf:latest", replicas=1):
     """
     if DEMO_MODE:
         print(f"[DEMO_MODE] Pretend creating UPF upf-ue{ue_id} (no Kubernetes API call).")
-        UPF_CREATE_COUNTER.inc()
+        # Update gauge approximation
+        refresh_upf_metrics()
         return True
     try:
         k8s_config.load_kube_config()
@@ -343,7 +455,8 @@ def create_upf_for_ue(ue_id, image="free5gc/upf:latest", replicas=1):
         apps_v1.create_namespaced_deployment(namespace="nexslice", body=deployment)
         v1.create_namespaced_service(namespace="nexslice", body=service)
         print(f"UPF {name} (Deployment+Service) créé pour UE {ue_id}.")
-        UPF_CREATE_COUNTER.inc()
+        # Refresh gauge to reflect the new UPF
+        refresh_upf_metrics()
     except Exception as e:
         print(f"Erreur lors de la création de l'UPF pour UE {ue_id}: {e}")
         return False
@@ -354,7 +467,8 @@ def delete_upf_for_ue(ue_id):
     """Supprime la Deployment et le Service UPF pour un UE si ils existent."""
     if DEMO_MODE:
         print(f"[DEMO_MODE] Pretend deleting UPF upf-ue{ue_id} (no Kubernetes API call).")
-        UPF_DELETE_COUNTER.inc()
+        # Update gauge approximation
+        refresh_upf_metrics()
         return True
     try:
         k8s_config.load_kube_config()
@@ -376,7 +490,8 @@ def delete_upf_for_ue(ue_id):
             print(f"Service {name} supprimé.")
         except Exception:
             pass
-        UPF_DELETE_COUNTER.inc()
+        # Refresh gauge to reflect deletion
+        refresh_upf_metrics()
     except Exception as e:
         print(f"Erreur lors de la suppression de l'UPF pour UE {ue_id}: {e}")
         return False

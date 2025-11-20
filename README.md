@@ -1,142 +1,394 @@
-# dynamic-slicing (NexSlice)
+# NexSlice — Contrôleur de Slicing Dynamique 5G
 
-Contrôleur custom de **slicing dynamique** pour NexSlice : ce projet illustre, de manière simplifiée, la création et la suppression automatiques d’un UPF dédié par UE dans Kubernetes.
+Un contrôleur de slicing dynamique pour réseau 5G avec monitoring Prometheus/Grafana.  
+**Chaque UE se voit attribuer un UPF dédié**, avec métriques exportées en temps réel.
 
-## Contexte et objectif
+---
 
-Dans l’état actuel de NexSlice, le slicing est statique : les VNFs (SMF, UPF) sont déployées à l’avance et associées aux slices. L’objectif de ce projet est de démontrer un **slicing dynamique simplifié** :
+## 📋 Prérequis
 
-- Lorsqu’un UE se connecte au gNB, un nouvel UPF dédié est créé automatiquement pour ce slice.
-- Lorsqu’un UE se déconnecte, l’UPF correspondant est supprimé pour libérer les ressources.
+- **Kubernetes cluster** (k3s, k8s, kind, minikube...) avec `kubectl` configuré
+- **Helm 3** installé (`helm version`)
+- **Python 3.9+** et `pip`
+- **Git** pour cloner les dépendances
+- **(Optionnel)** Prometheus et Grafana pour le monitoring
 
-Pour rester simple, le projet ne gère que la création/suppression d’UPF (pas de SMF dynamique).
+---
 
-## Positionnement dans l’état de l’art
+## 🚀 Déploiement rapide
 
-Ce projet correspond à la brique « contrôleur custom » recommandée dans l’état de l’art :
+### 1. Déployer le cœur de réseau 5G (OAI)
 
-- **Socle 5G** : un opérateur comme `open5gs-operator` ou une stack Helm (`towards5gs-helm`) déploie le cœur 5G (AMF, SMF, UPF, etc.) de manière déclarative via des CRDs.
-- **Contrôleur custom NexSlice (ce repo)** : réagit à des événements de connexion/déconnexion d’UE (simulés via API HTTP) pour créer/supprimer dynamiquement des ressources Kubernetes d’UPF (Deployment + Service) par UE ou par slice.
-- **Évolution possible** : intégration avec Prometheus / Alertmanager / KEDA pour piloter le scaling en fonction de métriques (UEs par slice, charge UPF, messages N4, etc.).
+⚠️ **Le projet nécessite un cœur de réseau 5G** (AMF, SMF, NRF, UDM, UDR, AUSF, NSSF, UPF, MySQL) pour que les UE et UPF puissent fonctionner.
 
-Dans une architecture complète, les événements UE pourraient provenir :
+Exécutez le script de déploiement automatique :
 
-- du cœur 5G (via logs, webhooks, CRDs mis à jour par `open5gs-operator`),
-- d’Alertmanager (modèle Prometheus + webhook Python),
-- ou d’un opérateur dédié. Ici, ils sont simplement simulés via des endpoints HTTP.
-
-## Vue d’ensemble du projet
-
-Ce dépôt contient :
-
-- Une petite application Flask qui expose des endpoints pour :
-	- créer un UE de test (Pod UERANSIM + ConfigMap),
-	- créer un UPF dédié (Deployment + Service) pour cet UE,
-	- supprimer l’UE et les ressources UPF associées.
-- Un test d’intégration qui vérifie que la création/suppression d’UPF fonctionne bien.
-
-Diagramme logique simplifié :
-
-```
-UE connexion (simulée)  → App Flask NexSlice (contrôleur custom)
-												 → API Kubernetes :
-														 - ConfigMap + Pod UERANSIM
-														 - Deployment + Service UPF dédié
-
-UE déconnexion (simulée) → App Flask NexSlice
-												 → Suppression Pod/ConfigMap UE + UPF
+```bash
+cd dynamic-slicing
+chmod +x scripts/deploy_5g_core.sh
+./scripts/deploy_5g_core.sh
 ```
 
-## Quickstart
+Ce script va :
+- Cloner le repo [AIDY-F2N/NexSlice](https://github.com/AIDY-F2N/NexSlice) dans `/tmp/NexSlice`
+- Déployer via Helm le chart `oai-5g-advance` dans le namespace `nexslice`
 
-Prérequis :
+✅ **Vérifiez que tous les pods du core sont en `Running`** :
 
-- Un cluster Kubernetes et un kubeconfig fonctionnel,
-- `kubectl` installé,
-- Python 3.11+ et `pip`.
-
-1. Installer les dépendances Python :
-
-	python -m pip install -r requirements.txt
-
-2. Lancer l’application Flask (depuis la racine du repo) :
-
-	python -m src.main
-
-3. Utiliser le script de démo pour créer un UE et vérifier la création de l’UPF (le script utilise `kubectl`) :
-
-	./scripts/demo.sh 1
-
-## Déploiement en-cluster (optionnel)
-
-Si vous souhaitez exécuter le contrôleur dans le cluster (mode production / test plus réaliste), des manifests Kubernetes sont fournis sous le dossier `k8s/` :
-
-
-Pour déployer dans le cluster :
-
-```fish
-# s'assurer que kubectl pointe vers le cluster souhaité
-kubectl create ns nexslice --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -f k8s/rbac-nexslice.yaml
-kubectl apply -f k8s/controller-deployment.yaml
-kubectl -n nexslice get deploy nexslice-controller
+```bash
+kubectl get pods -n nexslice
 ```
 
-### Mode démo sans cluster Kubernetes
+Attendez que les pods `oai-amf`, `oai-smf`, `oai-nrf`, `mysql`, etc. soient tous `Running` (peut prendre 2-5 minutes).
 
-Si tu veux uniquement démontrer le contrôleur (UI + Prometheus/Grafana) sans avoir accès à un cluster, active le mode démo :
+---
 
-```fish
+### 2. Installer les dépendances Python
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # ou .venv/bin/activate.fish pour fish shell
+pip install -r requirements.txt
+```
+
+---
+
+### 3. Lancer le contrôleur Flask
+
+**Mode cluster (avec Kubernetes réel)** :
+
+```bash
+export DEMO_MODE=0
+./.venv/bin/python -m src.main
+```
+
+**Mode démo (sans cluster, pour tests locaux)** :
+
+```bash
+export DEMO_MODE=1
+./.venv/bin/python -m src.main
+```
+
+L'application démarre sur **http://localhost:5000**.
+
+---
+
+### 4. (Optionnel) Lancer Prometheus & Grafana
+
+**Démarrer Prometheus** :
+
+```bash
+prometheus --config.file=prometheus.yml > /tmp/prometheus.log 2>&1 &
+```
+
+Accès : http://localhost:9090
+
+**Démarrer Grafana** :
+
+```bash
+grafana-server --homepath /usr/share/grafana > /tmp/grafana.log 2>&1 &
+```
+
+Accès : http://localhost:3000 (login par défaut : `admin`/`admin`)
+
+Dans Grafana :
+1. Ajouter une source de données Prometheus → `http://localhost:9090`
+2. Créer un dashboard pour visualiser :
+   - `nexslice_active_ues` (nombre d'UE actifs)
+   - `nexslice_upfs_total` (nombre total d'UPF déployés)
+
+Un dashboard JSON prêt à l'emploi est disponible dans `prometheus-dashboard.json`.
+
+---
+
+## 🎯 Utilisation
+
+### Interface Web
+
+Accédez à **http://localhost:5000** pour :
+
+- ➕ **Ajouter un UE** → Crée un pod UE + un UPF dédié dans Kubernetes
+- 🔄 **Générer 100 UE** → Simulation de charge (crée 100 UE + 100 UPF)
+- 🗑️ **Supprimer 100 UE** → Cleanup massif des ressources
+- 📊 **Voir la liste des UE actifs** (auto-refresh toutes les 3 secondes)
+
+### API Endpoints
+
+| Endpoint | Méthode | Description |
+|---|---|---|
+| `/` | GET | Interface web principale |
+| `/add_pod` | POST | Créer un UE + UPF dédié |
+| `/create_pods` | POST | Générer 100 UE d'un coup |
+| `/delete_pods` | POST | Supprimer les 100 UE + UPF |
+| `/remove_pod/<ue_id>` | POST | Supprimer un UE spécifique |
+| `/api/ue-count` | GET | Nombre de UE actifs (JSON) |
+| `/api/ue-list` | GET | Liste JSON des UE |
+| `/api/ue-connect` | POST | Simuler connexion UE |
+| `/api/ue-disconnect` | POST | Simuler déconnexion UE |
+| `/metrics` | GET | Métriques Prometheus |
+
+**Exemple d'utilisation de l'API** :
+
+```bash
+# Créer un UE
+curl -X POST http://localhost:5000/add_pod
+
+# Lister les UE
+curl http://localhost:5000/api/ue-list
+
+# Supprimer l'UE numéro 5
+curl -X POST http://localhost:5000/remove_pod/5
+
+# Voir les métriques Prometheus
+curl http://localhost:5000/metrics
+```
+
+### Métriques Prometheus
+
+Deux métriques principales sont exposées :
+
+- **`nexslice_active_ues`** : Nombre de UE configurés (compte basé sur les fichiers de config locaux)
+- **`nexslice_upfs_total`** : Nombre total d'UPF déployés dans le cluster Kubernetes (ou approximation en DEMO_MODE)
+
+Endpoint de scrape : `http://localhost:5000/metrics`
+
+Configuration Prometheus : voir `prometheus.yml` (scrape toutes les 15 secondes).
+
+---
+
+## 🏗️ Architecture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                   Flask Controller                       │
+│  (src/main.py - port 5000)                               │
+│  • API REST pour créer/supprimer UE/UPF                 │
+│  • Exposition métriques Prometheus (/metrics)            │
+│  • Interface web (HTML/JS)                               │
+└────────────────┬─────────────────────────────────────────┘
+                 │
+                 ▼
+┌──────────────────────────────────────────────────────────┐
+│        Kubernetes Cluster (namespace: nexslice)          │
+│                                                          │
+│  ┌────────────────────────────────────────┐             │
+│  │         5G Core Network (OAI)          │             │
+│  │  • AMF (Access and Mobility Mgmt)      │             │
+│  │  • SMF (Session Management Function)   │             │
+│  │  • NRF (NF Repository Function)        │             │
+│  │  • UDM, UDR, AUSF, NSSF                │             │
+│  │  • MySQL (subscriber database)         │             │
+│  └────────────────────────────────────────┘             │
+│                                                          │
+│  ┌─────────────────┐  ┌──────────────────┐             │
+│  │  UERANSIM gNB   │  │  UE Pods         │             │
+│  │  (simulateur)   │  │  (UERANSIM)      │             │
+│  └─────────────────┘  │  • ueransim-ue1  │             │
+│                        │  • ueransim-ue2  │             │
+│  ┌─────────────────┐  │  • ...           │             │
+│  │  UPF Pods       │  └──────────────────┘             │
+│  │  (OAI UPF)      │                                    │
+│  │  • upf-ue1      │  🔹 1 UPF dédié par UE            │
+│  │  • upf-ue2      │                                    │
+│  │  • ...          │                                    │
+│  └─────────────────┘                                    │
+└──────────────────────────────────────────────────────────┘
+                 │
+                 ▼
+┌──────────────────────────────────────────────────────────┐
+│       Prometheus + Grafana (monitoring)                  │
+│  • Scrape /metrics toutes les 15s                        │
+│  • Dashboards temps réel pour UE et UPF                  │
+│  • Alerting sur seuils de charge                         │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Flux de création d'un UE
+
+```
+1. User → POST /add_pod
+2. Flask génère config UERANSIM (IMSI, key, etc.)
+3. Flask crée ConfigMap K8s avec la config
+4. Flask crée Pod UERANSIM (monte le ConfigMap)
+5. Flask crée Deployment + Service UPF dédié (labels app=upf, ue-id=X)
+6. Flask rafraîchit les métriques Prometheus
+7. UE pod démarre et se connecte au gNB/Core 5G
+```
+
+---
+
+## 🐛 Dépannage
+
+### ❌ Les pods UE ou UPF sont en CrashLoopBackOff
+
+**1. Vérifier les logs** :
+```bash
+kubectl -n nexslice logs <pod-name>
+kubectl -n nexslice logs <pod-name> --previous
+```
+
+**2. Vérifier les events Kubernetes** :
+```bash
+kubectl -n nexslice describe pod <pod-name>
+kubectl -n nexslice get events --sort-by=.metadata.creationTimestamp | tail -n 50
+```
+
+**3. Causes fréquentes** :
+
+| Symptôme | Cause probable | Solution |
+|---|---|---|
+| `ErrImagePull` / `ImagePullBackOff` | Image Docker introuvable | Vérifier le nom de l'image dans `src/main.py` |
+| `exec: "/chemin": no such file or directory` | Binaire ou entrypoint incorrect | Corriger `command`/`args` ou laisser l'image utiliser son ENTRYPOINT |
+| `OOMKilled` | Manque de mémoire | Augmenter `resources.limits.memory` |
+| `Completed` puis redémarre | Le conteneur se termine avec succès mais k8s le relance | Vérifier `restartPolicy` (doit être `Always` pour services longs) |
+| Logs : `Cannot connect to AMF/SMF` | Core 5G pas prêt | Attendre que `oai-amf`, `oai-smf`, etc. soient `Running` |
+
+**4. Vérifier l'état du Core 5G** :
+```bash
+kubectl get pods -n nexslice -l app.kubernetes.io/name=oai-amf
+kubectl get pods -n nexslice -l app.kubernetes.io/name=oai-smf
+```
+
+Si des pods du core sont en erreur, consultez leurs logs et redéployez le core si nécessaire.
+
+---
+
+### ❌ Le contrôleur Flask ne démarre pas
+
+**Erreur : `ModuleNotFoundError`**
+
+→ Installer les dépendances :
+```bash
+pip install -r requirements.txt
+```
+
+**Erreur : `Address already in use` sur le port 5000**
+
+→ Un autre processus utilise le port. Trouver et arrêter le processus :
+```bash
+ss -ltnp | grep ':5000'
+kill <PID>
+```
+
+**Erreur : `Unable to load kubeconfig`**
+
+→ Si vous n'avez pas de cluster Kubernetes actif, lancez en mode DEMO :
+```bash
 export DEMO_MODE=1
 python -m src.main
 ```
 
-Dans ce mode, les appels au client Kubernetes sont ignorés mais les métriques (`nexslice_active_ues`, `nexslice_upf_creations_total`, `nexslice_upf_deletions_total`) sont incrémentées, ce qui permet de visualiser un flux complet dans Grafana sans cluster. Pour retrouver le comportement réel, laisse `DEMO_MODE` désactivé.
+---
 
-Notes :
-- Ajustez les variables d'environnement `UPF_IMAGE` et `UPF_REPLICAS` dans `k8s/controller-deployment.yaml` ou via `kubectl set env` si vous voulez utiliser une image UPF différente.
-- En-cluster, veillez à ce que le `ServiceAccount` ait les permissions nécessaires (le fichier `rbac-nexslice.yaml` contient un jeu minimal de permissions pour le POC).
-- Si vous exécutez l'app hors cluster (mode courant), les manifests sont facultatifs.
+### ❌ Prometheus ne scrape pas les métriques
 
-## Endpoints principaux
+**1. Vérifier que Flask expose bien `/metrics`** :
+```bash
+curl http://localhost:5000/metrics
+```
 
-- `POST /add_pod` :
-	- Simule une connexion UE.
-	- Génère la configuration UERANSIM, crée un ConfigMap, crée un Pod UE et crée un UPF dédié (`Deployment` + `Service`) pour cet UE.
+Vous devriez voir :
+```
+# HELP nexslice_active_ues Nombre d'UE configurés
+# TYPE nexslice_active_ues gauge
+nexslice_active_ues 0.0
+# HELP nexslice_upfs_total Nombre total d'UPF déployés
+# TYPE nexslice_upfs_total gauge
+nexslice_upfs_total 0.0
+```
 
-- `POST /remove_pod/<ue_id>` :
-	- Simule une déconnexion UE.
-	- Supprime le Pod UE, le ConfigMap associé et l’UPF (Deployment + Service) correspondant.
+**2. Vérifier la configuration Prometheus** :
+```bash
+cat prometheus.yml
+```
 
-- `GET /api/ue-count` :
-	- Renvoie le nombre de fichiers de configuration UE présents (approximation du nombre d’UE créés).
+Assurez-vous que `localhost:5000` est bien dans les `targets`.
 
-Ces endpoints représentent la partie « contrôleur custom » du workflow recommandé dans l’état de l’art ; ils pourront, dans une étape ultérieure, être appelés via des webhooks provenant d’Alertmanager ou d’un opérateur 5G.
+**3. Vérifier les targets dans Prometheus UI** :
 
-## Fichiers importants
+Accédez à http://localhost:9090/targets et vérifiez que `nexslice-controller` est `UP`.
 
-- `src/main.py` – application Flask qui :
-	- génère la configuration UE UERANSIM,
-	- crée le ConfigMap et le Pod UE,
-	- crée/supprime un `Deployment` + `Service` UPF par UE.
-- `scripts/demo.sh` – script simple pour exercer les flux d’ajout/suppression d’UE et vérifier les ressources UPF via `kubectl`.
-- `tests/test_dynamic_upf.py` – test d’intégration de création/suppression d’UPF.
+---
 
-## Configuration
+### ❌ Grafana ne se connecte pas à Prometheus
 
-- L’image UPF utilisée par défaut est `free5gc/upf:latest`. Pour la changer, définir la variable d’environnement `UPF_IMAGE` avant de lancer l’application Flask.
-- Le nombre de réplicas pour un Deployment UPF est contrôlable via la variable d’environnement `UPF_REPLICAS`.
+**1. Vérifier que Prometheus est accessible** :
+```bash
+curl http://localhost:9090/api/v1/query?query=up
+```
 
-## Lien avec l’état de l’art et travaux futurs
+**2. Dans Grafana, configurer la datasource** :
+- URL : `http://localhost:9090`
+- Access : `Server (default)` ou `Browser` selon votre setup
+- Cliquer sur "Save & Test"
 
-Ce POC implémente la logique minimale de slicing dynamique recommandée :
+---
 
-- Création d’un UPF dédié lors de la « connexion » d’un UE,
-- Suppression de l’UPF lors de la « déconnexion » de l’UE.
+## 📚 Documentation complémentaire
 
-Évolutions possibles pour se rapprocher davantage des projets de référence :
+- **[docs/design.md](docs/design.md)** : Architecture détaillée et design du système
+- **[docs/monitoring.md](docs/monitoring.md)** : Setup Prometheus/Grafana approfondi
+- **[ETAT_ART.md](ETAT_ART.md)** : État de l'art du network slicing 5G
 
-- **Intégration open5gs-operator / HEXAeBPF** : utiliser leurs CRDs pour déclarer les slices et brancher ce contrôleur sur les événements UE réels.
-- **Prometheus / Alertmanager / KEDA** : exposer des métriques (UEs par slice, charge UPF) et déclencher la création/suppression ou le scaling des UPF via des webhooks et/ou des objets `ScaledObject` KEDA.
-- **Monitoring Prometheus + Grafana** : utilise l'endpoint `/metrics` exposé par l'app et suis les indications de `docs/monitoring.md` pour configurer Prometheus + Grafana.
-- **Opérateur Kubernetes dédié** : transformer cette app Flask en opérateur Kubernetes (par exemple avec `kopf`) pour suivre le pattern « Operator » complet.
+---
+
+## 🧪 Tests
+
+Lancer les tests d'intégration (en DEMO_MODE par défaut) :
+
+```bash
+pytest tests/test_dynamic_upf.py -v
+```
+
+Pour tester avec un vrai cluster :
+
+```bash
+export DEMO_MODE=0
+pytest tests/test_dynamic_upf.py -v
+```
+
+---
+
+## 🔧 Variables d'environnement
+
+| Variable | Valeur par défaut | Description |
+|---|---|---|
+| `DEMO_MODE` | `0` | `1` = mode démo (pas de K8s), `0` = mode cluster réel |
+| `UPF_IMAGE` | `oaisoftwarealliance/oai-upf:latest` | Image Docker pour les UPF |
+| `UPF_REPLICAS` | `1` | Nombre de replicas par UPF Deployment |
+
+**Exemple** :
+
+```bash
+export DEMO_MODE=0
+export UPF_IMAGE=my-registry/custom-upf:v2.0
+export UPF_REPLICAS=2
+python -m src.main
+```
+
+---
+
+## 📝 Licence
+
+[LICENSE](LICENSE) — voir le fichier pour plus de détails.
+
+---
+
+## 🤝 Contribution
+
+Les contributions sont les bienvenues ! Pour contribuer :
+
+1. Forkez le projet
+2. Créez une branche pour votre feature (`git checkout -b feature/AmazingFeature`)
+3. Committez vos changements (`git commit -m 'Add some AmazingFeature'`)
+4. Pushez vers la branche (`git push origin feature/AmazingFeature`)
+5. Ouvrez une Pull Request
+
+---
+
+## 🏆 Crédits
+
+Projet basé sur :
+- [AIDY-F2N/NexSlice](https://github.com/AIDY-F2N/NexSlice) pour le core 5G OAI
+- [OpenAirInterface](https://www.openairinterface.org/) pour les composants 5G
+- [UERANSIM](https://github.com/aligungr/UERANSIM) pour la simulation RAN
