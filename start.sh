@@ -4,6 +4,11 @@
 
 set NAMESPACE "nexslice"
 
+# Read DEMO_MODE env if present, default to 0 (cluster mode)
+if not set -q DEMO_MODE
+    set -gx DEMO_MODE 0
+end
+
 echo "═══════════════════════════════════════════════"
 echo "  NexSlice — Dynamic 5G Slicing Controller"
 echo "═══════════════════════════════════════════════"
@@ -12,14 +17,16 @@ echo ""
 # Check prerequisites
 echo "[1/5] Checking prerequisites..."
 
-if not command -v kubectl &> /dev/null
-    echo "❌ ERROR: kubectl not found. Please install kubectl."
-    exit 1
-end
+if test $DEMO_MODE -eq 0
+    if not command -v kubectl &> /dev/null
+        echo "❌ ERROR: kubectl not found. Please install kubectl."
+        exit 1
+    end
 
-if not command -v helm &> /dev/null
-    echo "❌ ERROR: helm not found. Please install helm."
-    exit 1
+    if not command -v helm &> /dev/null
+        echo "❌ ERROR: helm not found. Please install helm."
+        exit 1
+    end
 end
 
 if not command -v python3 &> /dev/null
@@ -33,22 +40,54 @@ echo ""
 # Check if 5G core is deployed
 echo "[2/5] Checking 5G core network deployment..."
 
-set CORE_PODS (kubectl get pods -n $NAMESPACE -l app.kubernetes.io/name=oai-amf --no-headers 2>/dev/null | wc -l)
+if test $DEMO_MODE -eq 1
+    echo "ℹ️  DEMO_MODE set — skipping 5G core checks and helm deployment."
+else
+    set CORE_PODS (kubectl get pods -n $NAMESPACE -l app.kubernetes.io/name=oai-amf --no-headers 2>/dev/null | wc -l)
 
-if test $CORE_PODS -eq 0
+    if test $CORE_PODS -eq 0
     echo "⚠️  5G core network not found in namespace '$NAMESPACE'"
     echo "    Would you like to deploy it now? (requires internet and ~5 minutes)"
     read -P "    Deploy 5G core? [y/N]: " deploy_core
     
     if test "$deploy_core" = "y" -o "$deploy_core" = "Y"
         echo "    Deploying 5G core network..."
+        # Ensure the custom setpodnet scheduler (required by the charts) is installed first when available
+        if test -f /tmp/NexSlice/setpodnet-scheduler.yaml
+            echo "    Applying setpodnet-scheduler from /tmp/NexSlice/setpodnet-scheduler.yaml"
+            kubectl apply -f /tmp/NexSlice/setpodnet-scheduler.yaml || echo "    Warning: failed to apply setpodnet-scheduler.yaml"
+        end
         ./scripts/deploy_5g_core.sh
         if test $status -ne 0
             echo "❌ Failed to deploy 5G core. Check logs above."
             exit 1
         end
-        echo "✅ 5G core deployment initiated. Waiting for pods to be ready..."
+        echo "✅ 5G core deployment initiated. Waiting for AMF pods to be ready..."
         kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=oai-amf -n $NAMESPACE --timeout=300s
+
+        echo "    Waiting for NRF pods to be ready (required by AMF init containers)..."
+        if not kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=oai-nrf -n $NAMESPACE --timeout=300s
+            echo "⚠️  Timeout waiting for NRF to be ready. Running diagnostics..."
+            echo "    • Pods in namespace $NAMESPACE:"
+            kubectl get pods -n $NAMESPACE -o wide
+            echo "    • NRF Pod description (last 40 lines):"
+            kubectl -n $NAMESPACE get pod -l app.kubernetes.io/name=oai-nrf -o name | xargs -I{} kubectl -n $NAMESPACE describe {} | tail -n 40
+            echo "    • AMF init logs (last 40 lines) to see what AMF is doing:"
+            kubectl -n $NAMESPACE get pod -l app.kubernetes.io/name=oai-amf -o name | xargs -I{} kubectl -n $NAMESPACE logs {} -c init --tail=40 || true
+            echo "    • Current Service & Endpoints for oai-nrf:"
+            kubectl -n $NAMESPACE get svc oai-nrf -o wide || true
+            kubectl -n $NAMESPACE get endpoints oai-nrf -o yaml || true
+            echo "    • DNS resolution & HTTP test from a temporary debug pod in the same ns:"
+            echo "      • Running curl test (this will create a transient pod):"
+            kubectl -n $NAMESPACE run --rm -i --restart=Never debug-curl --image=curlimages/curl -- curl -sS -I -v http://oai-nrf:80/ || true
+            echo "    • NetworkPolicy rules for namespace (if any):"
+            kubectl -n $NAMESPACE get netpol || true
+            echo "    • Scheduler status (setpodnet-scheduler) in kube-system (if required by the chart):"
+            kubectl -n kube-system get deploy setpodnet-scheduler -o wide || true
+            echo "    • Saving Helm manifest for offline inspection (/tmp/5gc-manifest.yaml)"
+            helm -n $NAMESPACE get manifest 5gc > /tmp/5gc-manifest.yaml || true
+            echo "    Please inspect the logs above and try again when NRF is Ready." 
+        end
     else
         echo "    Skipping 5G core deployment. Note: UE/UPF pods will not work without it."
     end
@@ -85,7 +124,8 @@ echo "[4/5] Starting monitoring stack..."
 if not pgrep -f 'prometheus.*prometheus.yml' > /dev/null
     echo "    Starting Prometheus..."
     prometheus --config.file=prometheus.yml > /tmp/prometheus.log 2>&1 &
-    echo $! > /tmp/prometheus.pid
+    # fish: use $last_pid to capture the last background process id
+    echo $last_pid > /tmp/prometheus.pid
     sleep 2
     if pgrep -f 'prometheus.*prometheus.yml' > /dev/null
         echo "✅ Prometheus started (http://localhost:9090)"
@@ -96,17 +136,23 @@ else
     echo "✅ Prometheus already running"
 end
 
-# Optional: Start Grafana
+# Optional: Start Grafana (but skip if /var/lib/grafana not writable by this user)
 if command -v grafana-server &> /dev/null
     if not pgrep -f 'grafana-server' > /dev/null
-        echo "    Starting Grafana..."
-        grafana-server --homepath /usr/share/grafana > /tmp/grafana.log 2>&1 &
-        echo $! > /tmp/grafana.pid
-        sleep 2
-        if pgrep -f 'grafana-server' > /dev/null
-            echo "✅ Grafana started (http://localhost:3000, login: admin/admin)"
+        # Check if we can write the grafana data dir; otherwise recommend sudo/systemd service
+        if test -w /var/lib/grafana || test (id -u) -eq 0
+            echo "    Starting Grafana..."
+            grafana-server --homepath /usr/share/grafana > /tmp/grafana.log 2>&1 &
+            echo $last_pid > /tmp/grafana.pid
+            sleep 2
+            if pgrep -f 'grafana-server' > /dev/null
+                echo "✅ Grafana started (http://localhost:3000, login: admin/admin)"
+            else
+                echo "⚠️  Grafana failed to start (check /tmp/grafana.log)"
+            end
         else
-            echo "⚠️  Grafana failed to start (check /tmp/grafana.log)"
+            echo "⚠️  Grafana not started: /var/lib/grafana is not writable by this user."
+            echo "    Use 'sudo grafana-server --homepath /usr/share/grafana' or run grafana as a system service."
         end
     else
         echo "✅ Grafana already running"
@@ -124,12 +170,12 @@ if pgrep -f 'python -m src.main' > /dev/null
     exit 1
 end
 
-set -gx DEMO_MODE 0
-echo "    Starting Flask in cluster mode (DEMO_MODE=0)..."
+echo "    Starting Flask (DEMO_MODE=$DEMO_MODE)..."
 echo "    Logs: /tmp/nexslice_flask.log"
 
 nohup ./.venv/bin/python -m src.main > /tmp/nexslice_flask.log 2>&1 &
-echo $! > /tmp/nexslice_flask.pid
+# fish: use $last_pid to capture the last background process id
+echo $last_pid > /tmp/nexslice_flask.pid
 sleep 2
 
 if pgrep -f 'python -m src.main' > /dev/null

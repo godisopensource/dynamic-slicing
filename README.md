@@ -219,6 +219,48 @@ Configuration Prometheus : voir `prometheus.yml` (scrape toutes les 15 secondes)
 
 ## 🐛 Dépannage
 
+### ⚠️ Déboguer les timeouts d'init du `oai-amf` (impossible de joindre `oai-nrf`)
+
+Si `oai-amf` reste en `Init` et ses init containers indiquent des `curl` timeouts vers `oai-nrf`, suivez ces étapes :
+
+1. Vérifiez les pods et leur état :
+```bash
+kubectl get pods -n nexslice -o wide
+```
+
+2. Vérifiez les services et endpoints de `oai-nrf` :
+```bash
+kubectl get svc -n nexslice
+kubectl get endpoints oai-nrf -n nexslice -o yaml
+```
+
+3. Tentez un curl depuis un pod qui se trouve dans le namespace `nexslice` (remplacez `nexslice` si besoin) :
+```bash
+kubectl -n nexslice run --rm -i --restart=Never debug-curl --image=curlimages/curl -- sh -c "curl -sS -I -v http://oai-nrf:80/"
+```
+
+4. Examinez les logs du `oai-nrf` et de l'`oai-amf` (init container) :
+```bash
+kubectl -n nexslice logs -l app.kubernetes.io/name=oai-nrf --tail=100
+kubectl -n nexslice logs -l app.kubernetes.io/name=oai-amf -c init --tail=100
+```
+
+5. Vérifiez s'il existe des NetworkPolicy dans le namespace (elles peuvent bloquer la communication inter-pod) :
+```bash
+kubectl -n nexslice get netpol
+```
+
+6. Si tout semble correct mais le init continue d'échouer, sauvegardez le manifest Helm pour inspection :
+```bash
+helm -n nexslice get manifest 5gc > /tmp/5gc-manifest.yaml
+```
+
+Conseils additionnels :
+- Vérifiez que le scheduler `setpodnet-scheduler` (si utilisé) est en `Running` dans `kube-system`.
+- Vérifiez l'endpoint DNS court (ex. `oai-nrf`): les pods dans le même namespace doivent résoudre `oai-nrf` automatiquement.
+- Si le problème persiste, poster les extraits des logs ci-dessus et les `endpoints` pour analyse.
+
+
 ### ❌ Les pods UE ou UPF sont en CrashLoopBackOff
 
 **1. Vérifier les logs** :
