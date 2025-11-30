@@ -25,9 +25,9 @@ L'implémentation de ce projet repose sur les concepts fondamentaux de la 5G Sta
 
 **Séparation CUPS (Control and User Plane Separation)**
 
-Introduite dans la Release 14 et native dans la 5G (TS 23.501), la séparation CUPS est le catalyseur de ce projet. Elle dissocie :
-*   **Le Plan de Contrôle (SMF) :** Cerveau du réseau, il gère la signalisation et la sélection du nœud de données.
-*   **Le Plan Utilisateur (UPF) :** Muscle du réseau, il route les paquets et peut être instancié à la demande.
+Native dans la 5G, la séparation CUPS est l'objectif de ce projet. Elle dissocie :
+*   **Le Plan de Contrôle (SMF) :** Il gère la signalisation et la sélection du nœud de données.
+*   **Le Plan Utilisateur (UPF) :** Il route les paquets et peut être instancié à la demande.
 
 **Identification du Slice (S-NSSAI)**
 
