@@ -1,5 +1,0 @@
-FROM python:3.11-alpine
-RUN pip install --no-cache-dir prometheus_client
-COPY network_exporter.py /app/network_exporter.py
-WORKDIR /app
-CMD ["python3", "network_exporter.py"]
