@@ -7,21 +7,61 @@
 
 ## 1. État de l'Art
 
-### 1.1. Contexte et Objectifs
-L'évolution vers la 5G Standalone (SA) introduit la séparation du plan de contrôle et du plan utilisateur (**CUPS** - *Control and User Plane Separation*), définie dans la spécification 3GPP TS 23.501. Cette architecture permet de placer les fonctions de traitement de données (UPF) au plus près de l'utilisateur (Edge Computing) et de les instancier dynamiquement.
+### 1.1. Introduction et Contexte du Projet
 
-L'objectif de ce projet est de dépasser le déploiement statique traditionnel pour atteindre une **instanciation automatisée de l'UPF déclenchée par la connexion d'un UE**.
+Dans sa version actuelle, NexSlice implémente un découpage réseau (slicing) statique : les fonctions réseaux virtuelles (VNFs), telles que le SMF (*Session Management Function*) et l'UPF (*User Plane Function*), sont pré-allouées dans le cluster Kubernetes lors du déploiement initial.
 
-### 1.2. Analyse des Standards et Technologies
-*   **Identification du Slice (S-NSSAI) :** Le standard utilise le couple SST (*Slice Service Type*) et SD (*Slice Differentiator*) pour router le trafic. C'est le déclencheur (*trigger*) de notre logique d'orchestration.
-*   **Orchestration Kubernetes :** L'état de l'art industriel privilégie le pattern **Opérateur Kubernetes** (boucle de réconciliation) pour gérer le cycle de vie des applications.
-*   **Solutions existantes :**
-    *   *Open5GS-operator* : Approche opérateur complète mais complexe.
-    *   *KEDA* : Autoscaling basé sur des événements, pertinent mais nécessite des métriques custom.
-    *   *Approche Script/API* : Plus flexible pour le prototypage rapide d'une logique métier spécifique ("1 UE = 1 UPF").
+**Objectif du Slicing Dynamique**
 
-### 1.3. Positionnement du Projet
-NexSlice se positionne comme un **Orchestrateur Léger** (Lightweight Orchestrator). Plutôt que de développer un Opérateur Kubernetes complexe (CRDs, Controller Runtime) ou d'utiliser des scripts Bash fragiles, nous avons opté pour un **Contrôleur REST (Flask)** qui interagit directement avec l'API Kubernetes. Cela permet une logique impérative claire pour la démonstration tout en restant Cloud-Native.
+Le scénario cible vise à illustrer le comportement suivant :
+*   **Connexion :** Lorsqu'un UE s'attache au gNB, un UPF dédié est instancié automatiquement (via script ou opérateur).
+*   **Déconnexion :** Lorsque l'UE se détache, l'UPF est détruit pour libérer les ressources.
+
+> *Note : Le périmètre se limite à la création dynamique de l'UPF, le SMF restant statique.*
+
+### 1.2. Cadre de Référence : Architecture 3GPP
+
+L'implémentation de ce projet repose sur les concepts fondamentaux de la 5G Standalone (SA) définis par le 3GPP.
+
+**Séparation CUPS (Control and User Plane Separation)**
+
+Introduite dans la Release 14 et native dans la 5G (TS 23.501), la séparation CUPS est le catalyseur de ce projet. Elle dissocie :
+*   **Le Plan de Contrôle (SMF) :** Cerveau du réseau, il gère la signalisation et la sélection du nœud de données.
+*   **Le Plan Utilisateur (UPF) :** Muscle du réseau, il route les paquets et peut être instancié à la demande.
+
+**Identification du Slice (S-NSSAI)**
+
+Chaque tranche réseau est identifiée par un **S-NSSAI** (*Single Network Slice Selection Assistance Information*), composé d'un SST (*Slice Service Type*) et d'un SD (*Slice Differentiator*). C'est cet identifiant, transmis lors de la requête d'enregistrement de l'UE, qui servira de déclencheur (*trigger*) pour l'instanciation dynamique.
+
+### 1.3. Orchestration Cloud-Native et Kubernetes
+
+L'état de l'art industriel s'éloigne des scripts impératifs pour adopter le modèle déclaratif de Kubernetes.
+
+**Le Pattern "Opérateur Kubernetes"**
+
+Contrairement à un script Bash qui s'exécute une fois, un Opérateur est un programme qui tourne en boucle dans le cluster pour réconcilier l'état réel avec l'état désiré.
+
+> **Boucle de Réconciliation : Observe → Analyze → Act.**
+> *   **Avantage :** Gestion automatique des pannes (Self-healing). Si l'UPF de l'UE crashe, l'opérateur le redémarre.
+> *   **Implémentation :** Utilisation de CRDs (*Custom Resource Definitions*) pour définir un objet `UE-Slice`.
+
+**Défis Techniques Identifiés**
+
+1.  **Latence de démarrage (Cold Start) :** L'instanciation d'un Pod UPF prend plusieurs secondes. Il faut s'assurer que les timers de connexion de l'UE (au niveau NAS/RRC) n'expirent pas avant que l'UPF ne soit prêt.
+2.  **Reconfiguration du SMF :** Le SMF doit être notifié dynamiquement de l'adresse IP du nouvel UPF pour établir l'association PFCP (port 8805), ce qui n'est pas standard dans les déploiements statiques.
+
+### 1.4. État de l'Art des Solutions Open-Source
+
+Le tableau ci-dessous synthétise les dépôts GitHub et projets existants pouvant servir de base technologique pour NexSlice.
+
+| Projet / Dépôt | Technologie | Apport pour NexSlice | Limites |
+| :--- | :--- | :--- | :--- |
+| **Gradiant** (open5gs-operator) | Opérateur K8s, CRDs | Fournit un cadre "Opérateur" complet pour Open5GS. Idéal pour comprendre la logique. | Ne gère pas le "1 UE = 1 UPF" par défaut. Nécessite modification. |
+| **KEDA / Aether** | Event-driven Autoscaling | **Brique clé.** Permet de scaler des Pods sur événements (métriques ou logs). | Nécessite de définir une métrique personnalisée précise pour détecter l'UE. |
+| **Prometheus & Webhooks** | Scripting Python | Approche réactive simple (Alerte → Script). Bon pour un prototype rapide. | Souvent basé sur Docker Compose, moins robuste que K8s natif. |
+| **HEXAeBPF** | Opérateur, eBPF | Très haute performance. Montre l'avenir de l'UPF. | Complexité technique trop élevée pour une démo fonctionnelle. |
+| **towards5gs-helm** | Helm Charts | Base de déploiement très stable pour le cœur de réseau initial. | Déploiement purement statique. Aucune logique dynamique. |
+| **niloysh** (open5gs-k8s) | Monitoring | Excellent pour visualiser les KPIs des slices créés. | Se concentre sur l'observation, pas sur l'action d'instanciation. |
 
 ---
 
@@ -29,8 +69,6 @@ NexSlice se positionne comme un **Orchestrateur Léger** (Lightweight Orchestrat
 
 ### 2.1. Architecture "1 UE = 1 UPF"
 Nous avons choisi une granularité fine : **chaque équipement utilisateur (UE) dispose de son propre UPF dédié**.
-
-*   **Justification :** Cette approche garantit une isolation totale des ressources (CPU/RAM/Bande passante) pour chaque utilisateur, simulant un cas d'usage critique (ex: chirurgie à distance, V2X) où la performance ne doit pas être impactée par les voisins.
 
 ### 2.2. Le Contrôleur Centralisé (Flask)
 Le cœur du système est une application Python/Flask qui agit comme un chef d'orchestre.
@@ -89,7 +127,7 @@ L'intégration Prometheus/Grafana permet de visualiser :
 
 ## 4. Conclusion
 
-Le projet NexSlice démontre la faisabilité d'un **slicing dynamique granulaire** dans un environnement 5G Standalone open-source. En couplant la flexibilité de l'API Kubernetes avec la logique métier d'un contrôleur Python, nous avons réussi à automatiser le cycle de vie complet des fonctions réseaux (UPF) en réponse à la demande utilisateur.
+Le projet démontre la faisabilité d'un **slicing dynamique granulaire** dans un environnement 5G Standalone open-source. En couplant la flexibilité de l'API Kubernetes avec la logique métier d'un contrôleur Python, nous avons réussi à automatiser le cycle de vie complet des fonctions réseaux (UPF) en réponse à la demande utilisateur.
 
 Cette architecture constitue une base solide pour des cas d'usage avancés comme le *Network Slicing as a Service* (NSaaS), où l'infrastructure s'adapte en temps réel aux besoins des clients verticaux.
 
@@ -101,7 +139,7 @@ Cette section contient l'ensemble des scripts et instructions nécessaires pour 
 
 ### 5.1. Prérequis
 
-- **OS :** Linux (Arch ou Ubuntu recommandé) ou macOS (pour le contrôleur uniquement).
+- **OS :** Linux (Arch ou Ubuntu recommandé).
 - **Kubernetes :** Cluster fonctionnel (k3s, k8s, kind...).
 - **Outils :** `kubectl`, `helm`, `python3`, `pip`, `git`.
 
@@ -163,33 +201,7 @@ Vérifie que les métriques du gNB remontent bien dans Prometheus.
 
 ---
 
-## 6. Architecture Technique
-
-```
-┌──────────────────────────────────────────────────────────┐
-│                   Flask Controller                       │
-│  (src/main.py - port 5000)                               │
-│  • API REST pour créer/supprimer UE/UPF                 │
-│  • Logique d'orchestration "1 UE = 1 UPF"                │
-└────────────────┬─────────────────────────────────────────┘
-                 │ (Kubernetes API)
-                 ▼
-┌──────────────────────────────────────────────────────────┐
-│        Kubernetes Cluster (namespace: nexslice)          │
-│                                                          │
-│  ┌──────────────────┐       ┌──────────────────┐         │
-│  │  5G Core (OAI)   │ <──── │  UERANSIM gNB    │         │
-│  └──────────────────┘       └─────────┬────────┘         │
-│           ▲                           │                  │
-│           │ (N4 Interface)            │ (Radio Link)     │
-│           ▼                           ▼                  │
-│  ┌─────────────────┐        ┌──────────────────┐         │
-│  │  UPF Pod (Dédié)│ <────> │  UE Pod          │         │
-│  └─────────────────┘        └──────────────────┘         │
-└──────────────────────────────────────────────────────────┘
-```
-
-## 7. Crédits
+## 6. Crédits
 
 Projet basé sur :
 - [AIDY-F2N/NexSlice](https://github.com/AIDY-F2N/NexSlice)
