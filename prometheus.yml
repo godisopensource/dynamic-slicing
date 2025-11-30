@@ -3,3 +3,12 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ['localhost:5000', '127.0.0.1:5000']
+  
+  - job_name: gnb-network-metrics
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['10.42.0.48:8000']
+        labels:
+          pod: 'ueransim-gnb'
+          namespace: 'nexslice'
+    scrape_interval: 10s

@@ -93,6 +93,7 @@ else
     end
 else
     echo "✅ 5G core network found ($CORE_PODS AMF pods running)"
+    end
 end
 echo ""
 

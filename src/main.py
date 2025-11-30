@@ -211,14 +211,14 @@ def add_pods():
 
 def generate_ue_config(ue_id):
     """Génère un fichier de configuration UERANSIM pour un UE"""
-    # Padding pour avoir un IMSI unique (ex: 999700000000001)
-    imsi = f"999700{ue_id:09d}"
+    # Padding pour avoir un IMSI unique (ex: 208950000000001)
+    imsi = f"20895{ue_id:010d}"
     msisdn = f"{ue_id:010d}"
     
     config_content = f"""# UE Configuration for ue{ue_id}
 supi: 'imsi-{imsi}'
-mcc: '999'
-mnc: '70'
+mcc: '208'
+mnc: '95'
 key: '465B5CE8B199B49FAA5F0A2EE238A6BC'
 op: 'E8ED289DEBA952E4283B54E88E6183CA'
 opType: 'OPC'
@@ -227,8 +227,9 @@ imei: '{ue_id:015d}'
 imeiSv: '{ue_id:016d}'
 
 # List of gNB IP addresses for Radio Link Simulation
+# Use pod name directly for radio link simulation (not service)
 gnbSearchList:
-  - ueransim-gnb
+  - ueransim-gnb.nexslice.svc.cluster.local
 
 # UAC Access Identities Configuration
 uacAic:
@@ -247,26 +248,27 @@ uacAcc:
 # Initial PDU sessions to be established
 sessions:
   - type: 'IPv4'
-    apn: 'internet'
+    apn: 'oai'
     slice:
       sst: 1
-      sd: 0x111111
 
 # Configured NSSAI for this UE by HPLMN
 configured-nssai:
   - sst: 1
-    sd: 0x111111
 
 # Default Configured NSSAI for this UE
 default-nssai:
   - sst: 1
-    sd: 0x111111
 
 # Supported encryption and integrity algorithms by this UE
 integrity:
   IA1: true
   IA2: true
   IA3: true
+
+integrityMaxRate:
+  uplink: 'full'
+  downlink: 'full'
 
 ciphering:
   EA1: true
@@ -303,7 +305,8 @@ def create_ue_configmap(ue_id):
                 "namespace": "nexslice"
             },
             "data": {
-                f"ue{ue_id}.yaml": config_data
+                # UERANSIM entrypoint expects /etc/ueransim/ue.yaml (hardcoded)
+                "ue.yaml": config_data
             }
         }
         
@@ -344,8 +347,9 @@ def create_ue_pod(ue_id, image="gradiant/ueransim:3.2.6"):
                     "name": "ueransim-ue",
                     "image": image,
                     "imagePullPolicy": "Always",
-                    # Let the image use its own ENTRYPOINT/CMD (UERANSIM image has a startup script)
-                    "args": ["nr-ue", "-c", f"/etc/ueransim/ue{ue_id}.yaml"],
+                    # UERANSIM entrypoint expects: <component> <config-file>
+                    # where component is 'ue' or 'gnb'
+                    "args": ["ue", "/etc/ueransim/ue.yaml"],
                     "volumeMounts": [{
                         "name": "config-volume",
                         "mountPath": "/etc/ueransim"
@@ -354,7 +358,7 @@ def create_ue_pod(ue_id, image="gradiant/ueransim:3.2.6"):
                         "capabilities": {
                             "add": ["NET_ADMIN"]
                         },
-                        "privileged": False
+                        "privileged": True
                     }
                 }],
                 "volumes": [{
@@ -391,6 +395,12 @@ def make_upf_deployment_and_service(name, labels, image, replicas):
             "template": {
                 "metadata": {"labels": labels},
                 "spec": {
+                    "volumes": [{
+                        "name": "configuration",
+                        "configMap": {
+                            "name": "oai-upf-configmap"
+                        }
+                    }],
                     "containers": [{
                         "name": "upf",
                         "image": image,
@@ -401,6 +411,10 @@ def make_upf_deployment_and_service(name, labels, image, replicas):
                             {"name": "ENABLE_5G_FEATURES", "value": "yes"},
                             {"name": "REGISTER_NRF", "value": "no"}
                         ],
+                        "volumeMounts": [{
+                            "name": "configuration",
+                            "mountPath": "/openair-upf/etc"
+                        }],
                         "securityContext": {
                             "capabilities": {"add": ["NET_ADMIN", "SYS_ADMIN"]},
                             "privileged": True
