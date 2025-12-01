@@ -3,6 +3,7 @@ import os
 from kubernetes import client
 from kubernetes import config as k8s_config
 import re
+import requests
 from prometheus_client import Gauge, Counter, generate_latest, CONTENT_TYPE_LATEST
 
 app = Flask(__name__)
@@ -80,6 +81,61 @@ def refresh_upf_metrics():
         UPF_GAUGE.set(get_upf_count())
     except Exception:
         pass
+
+
+def notify_smf_new_dnn(ue_id):
+    """Notifie le SMF d'un nouveau mapping DNN → UPF via webhook.
+    
+    Cette fonction envoie une requête HTTP au SMF pour l'informer qu'un nouveau
+    DNN a été créé et doit être routé vers l'UPF dédié correspondant.
+    
+    Le SMF doit exposer un endpoint webhook compatible avec ce format.
+    """
+    if DEMO_MODE:
+        print(f"[DEMO_MODE] Skip SMF notification for UE {ue_id}")
+        return True
+    
+    # URL du webhook SMF (à adapter selon votre déploiement)
+    smf_webhook_url = os.environ.get(
+        "SMF_WEBHOOK_URL",
+        "http://oai-smf.nexslice.svc.cluster.local:8080/api/dnn/register"
+    )
+    
+    payload = {
+        "dnn": f"oai-ue{ue_id}",
+        "upf_fqdn": f"upf-ue{ue_id}.nexslice.svc.cluster.local",
+        "upf_port": 8805,  # Port PFCP
+        "ip_range": f"12.1.{ue_id}.0/24",
+        "sst": 1,
+        "sd": f"{ue_id:06d}",
+        "pdu_session_type": "IPv4"
+    }
+    
+    try:
+        response = requests.post(
+            smf_webhook_url,
+            json=payload,
+            timeout=5,
+            headers={"Content-Type": "application/json"}
+        )
+        
+        if response.status_code in [200, 201, 204]:
+            print(f"✓ SMF notifié : oai-ue{ue_id} → upf-ue{ue_id} (Status: {response.status_code})")
+            return True
+        else:
+            print(f"⚠ SMF webhook status {response.status_code}: {response.text}")
+            return False
+            
+    except requests.exceptions.Timeout:
+        print(f"⚠ Timeout lors de la notification SMF pour UE {ue_id}")
+        return False
+    except requests.exceptions.ConnectionError:
+        print(f"⚠ SMF webhook non disponible (vérifier que le service est accessible)")
+        return False
+    except Exception as e:
+        print(f"Erreur notification SMF: {e}")
+        return False
+
 
 @app.route('/')
 def hello():
@@ -197,15 +253,23 @@ def delete_pods():
 def add_pods():
     i = get_last_ue_index() + 1
     print(f"Génération du UE {i}...")
+    
+    # 1. Générer config UE avec DNN unique
     generate_ue_config(i)
-    create_ue_configmap(i)
-    create_ue_pod(i)
-    print(f"UE {i} généré (fichiers de config créés)")
-    # Créer un UPF dédié pour ce nouvel UE
+    
+    # 2. Créer un UPF dédié pour ce nouvel UE
     try:
         create_upf_for_ue(i, image=UPF_IMAGE, replicas=UPF_REPLICAS)
     except Exception as e:
         print(f"Erreur lors de la création de l'UPF pour UE {i}: {e}")
+    
+    # 3. Notifier le SMF du nouveau mapping DNN → UPF
+    notify_smf_new_dnn(i)
+    
+    # 4. Créer les ressources UE (ConfigMap et Pod)
+    create_ue_configmap(i)
+    create_ue_pod(i)
+    print(f"UE {i} généré (fichiers de config créés)")
     
     return redirect(url_for('hello'))
 
@@ -248,17 +312,20 @@ uacAcc:
 # Initial PDU sessions to be established
 sessions:
   - type: 'IPv4'
-    apn: 'oai'
+    apn: 'oai-ue{ue_id}'
     slice:
       sst: 1
+      sd: {ue_id:06d}
 
 # Configured NSSAI for this UE by HPLMN
 configured-nssai:
   - sst: 1
+    sd: {ue_id:06d}
 
 # Default Configured NSSAI for this UE
 default-nssai:
   - sst: 1
+    sd: {ue_id:06d}
 
 # Supported encryption and integrity algorithms by this UE
 integrity:
