@@ -94,7 +94,7 @@ Une vidéo de démonstration complète du scénario (création UE, instanciation
 
 [🎥 Voir la vidéo de démonstration](DYNAMIC_SLICING_DEMO_VIDEO.mp4)
 
-### 3.1. Instanciation Dynamique Réussie
+### 3.2. Instanciation Dynamique Réussie
 Le système parvient à instancier un couple UE/UPF complet en moins de **15 secondes** (temps de démarrage des conteneurs inclus).
 
 ![Interface Web NexSlice](docs/images/web_interface.png)
@@ -106,14 +106,14 @@ Le système parvient à instancier un couple UE/UPF complet en moins de **15 sec
     upf-ue1-6d4b7d9f8-xk2qz         1/1     Running   10s
     ```
 
-### 3.2. Isolation du Trafic (Traffic Steering)
+### 3.3. Isolation du Trafic (Traffic Steering)
 Les tests de capture de trafic (via `tcpdump` sur l'UPF) confirment que les paquets ICMP générés par l'UE transitent bien par son UPF dédié et non par un UPF partagé.
 
 ![Preuve de Ping et Latence](docs/images/ping_test_proof.png)
 
 *   **Validation :** Le script `scripts/demo_traffic_capture.sh` automatise cette vérification en corrélant l'IP de l'interface TUN de l'UE avec les paquets vus sur l'interface réseau de l'UPF.
 
-### 3.3. Monitoring Temps Réel
+### 3.4. Monitoring Temps Réel
 L'intégration Prometheus/Grafana permet de visualiser :
 *   Le nombre d'UEs actifs.
 *   La consommation de ressources par Slice (CPU/RAM de chaque UPF).
