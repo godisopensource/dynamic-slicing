@@ -166,27 +166,6 @@ chmod +x start.sh
 
 Une fois le contrôleur lancé (accessible sur `http://localhost:5000`), vous pouvez utiliser les scripts de démonstration fournis dans `scripts/`.
 
-#### Scénario 1 : Cycle de Vie Complet
-Crée un UE, vérifie que son UPF dédié est créé, puis nettoie tout.
-
-```bash
-./scripts/demo_lifecycle.sh <ue_id>
-# Exemple : ./scripts/demo_lifecycle.sh 1
-```
-
-#### Scénario 2 : Preuve de Trafic
-Vérifie que le trafic de l'UE passe réellement par l'UPF dédié (Ping + Capture de paquets).
-
-```bash
-./scripts/demo_traffic_capture.sh
-```
-
-#### Scénario 3 : Métriques Radio
-Vérifie que les métriques du gNB remontent bien dans Prometheus.
-
-```bash
-./scripts/test_gnb_metrics.sh
-```
 
 ### 5.4. Interface Web et API
 
